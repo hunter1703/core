@@ -173,6 +173,12 @@ class Test_Files_Sharing extends OCA\Files_sharing\Tests\TestCase {
 	 * then the group share should be used to group the item
 	 */
 	public function testShareAndUnshareFromSelf() {
+		\Test_Files_Sharing::loginHelper(self::TEST_FILES_SHARING_API_USER2);
+		$user2View = new \OC\Files\View('/' . self::TEST_FILES_SHARING_API_USER2 . '/files');
+		$user2RootInfo = $user2View->getFileInfo('');
+
+		\Test_Files_Sharing::loginHelper(self::TEST_FILES_SHARING_API_USER1);
+
 		$fileinfo = $this->view->getFileInfo($this->filename);
 
 		// share the file to group1 (user2 is a member of this group) and explicitely to user2
@@ -191,6 +197,9 @@ class Test_Files_Sharing extends OCA\Files_sharing\Tests\TestCase {
 		$this->assertSame(2, count($dirContent));
 		$this->verifyDirContent($dirContent, array('welcome.txt', ltrim($this->filename, '/')));
 
+		$user2RootInfo2 = $user2View->getFileInfo('');
+		$this->assertNotEquals($user2RootInfo->getEtag(), $user2RootInfo2->getEtag());
+
 		// now user2 deletes the share (= unshare from self)
 		\OC\Files\Filesystem::unlink($this->filename);
 
@@ -198,6 +207,9 @@ class Test_Files_Sharing extends OCA\Files_sharing\Tests\TestCase {
 		$dirContent = \OC\Files\Filesystem::getDirectoryContent('/');
 		$this->assertSame(1, count($dirContent));
 		$this->verifyDirContent($dirContent, array('welcome.txt'));
+
+		$user2RootInfo3 = $user2View->getFileInfo('');
+		$this->assertNotEquals($user2RootInfo2->getEtag(), $user2RootInfo3->getEtag());
 
 		// login as user1...
 		\Test_Files_Sharing::loginHelper(self::TEST_FILES_SHARING_API_USER1);
@@ -215,7 +227,8 @@ class Test_Files_Sharing extends OCA\Files_sharing\Tests\TestCase {
 		$this->assertSame(2, count($dirContent));
 		$this->verifyDirContent($dirContent, array('welcome.txt', ltrim($this->filename, '/')));
 
-
+		$user2RootInfo4 = $user2View->getFileInfo('');
+		$this->assertNotEquals($user2RootInfo3->getEtag(), $user2RootInfo4->getEtag());
 	}
 
 	public function verifyDirContent($content, $expected) {
