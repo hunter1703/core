@@ -29,11 +29,14 @@
 
 namespace OCA\DAV\Connector\Sabre;
 
+use OC\AppFramework\Http\Request;
 use OC\Files\View;
 use OCP\Files\ForbiddenException;
 use Sabre\DAV\Exception\Forbidden;
 use Sabre\DAV\Exception\NotFound;
+use Sabre\DAV\Exception\PreconditionFailed;
 use Sabre\DAV\IFile;
+use Sabre\DAV\INode;
 use \Sabre\DAV\PropFind;
 use \Sabre\DAV\PropPatch;
 use Sabre\DAV\ServerPlugin;
@@ -43,8 +46,7 @@ use \Sabre\HTTP\ResponseInterface;
 use OCP\Files\StorageNotAvailableException;
 use OCP\IConfig;
 use OCP\IRequest;
-use Sabre\DAV\Exception\BadRequest;
-use OCA\DAV\Connector\Sabre\Directory;
+use Sabre\HTTP\URLUtil;
 
 class FilesPlugin extends ServerPlugin {
 
@@ -168,6 +170,7 @@ class FilesPlugin extends ServerPlugin {
 			}
 		});
 		$this->server->on('beforeMove', [$this, 'checkMove']);
+		$this->server->on('beforeMethod:MOVE', [$this, 'checkMoveDestinationHeader']);
 	}
 
 	/**
@@ -183,8 +186,8 @@ class FilesPlugin extends ServerPlugin {
 		if (!$sourceNode instanceof Node) {
 			return;
 		}
-		list($sourceDir,) = \Sabre\HTTP\URLUtil::splitPath($source);
-		list($destinationDir,) = \Sabre\HTTP\URLUtil::splitPath($destination);
+		list($sourceDir,) = URLUtil::splitPath($source);
+		list($destinationDir,) = URLUtil::splitPath($destination);
 
 		if ($sourceDir !== $destinationDir) {
 			$sourceNodeFileInfo = $sourceNode->getFileInfo();
@@ -199,6 +202,62 @@ class FilesPlugin extends ServerPlugin {
 	}
 
 	/**
+	 * The ownCloud specific If-Destination-Matches precondition will be checked
+	 * @param RequestInterface $request
+	 * @param ResponseInterface $response
+	 * @throws PreconditionFailed
+	 */
+	function checkMoveDestinationHeader(RequestInterface $request, ResponseInterface $response) {
+		$moveInfo = $this->server->getCopyAndMoveInfo($request);
+		$path = $moveInfo['destination'];
+		$etag = null;
+
+		if ($ifMatch = $request->getHeader('If-Destination-Match')) {
+
+			// If-Match contains an entity tag. Only if the entity-tag
+			// matches we are allowed to make the request succeed.
+			// If the entity-tag is '*' we are only allowed to make the
+			// request succeed if a resource exists at that url.
+			try {
+				$node = $this->tree->getNodeForPath($path);
+			} catch (NotFound $e) {
+				throw new PreconditionFailed('An If-Destination-Match header was specified and the resource did not exist', 'If-Destination-Match');
+			}
+
+			// Only need to check entity tags if they are not *
+			if ($ifMatch !== '*') {
+
+				// There can be multiple ETags
+				$ifMatch = explode(',', $ifMatch);
+				$haveMatch = false;
+				foreach ($ifMatch as $ifMatchItem) {
+
+					// Stripping any extra spaces
+					$ifMatchItem = trim($ifMatchItem, ' ');
+
+					$etag = $node instanceof IFile ? $node->getETag() : null;
+					if ($etag === $ifMatchItem) {
+						$haveMatch = true;
+					} else {
+						// Evolution has a bug where it sometimes prepends the "
+						// with a \. This is our workaround.
+						if (str_replace('\\"', '"', $ifMatchItem) === $etag) {
+							$haveMatch = true;
+						}
+					}
+
+				}
+				if (!$haveMatch) {
+					if ($etag) {
+						$response->setHeader('ETag', $etag);
+					}
+					throw new PreconditionFailed('An If-Destination-Match header was specified, but none of the specified the ETags matched.', 'If-Destination-Match');
+				}
+			}
+		}
+	}
+
+	/**
 	 * This sets a cookie to be able to recognize the start of the download
 	 * the content must not be longer than 32 characters and must only contain
 	 * alphanumeric characters
@@ -206,7 +265,7 @@ class FilesPlugin extends ServerPlugin {
 	 * @param RequestInterface $request
 	 * @param ResponseInterface $response
 	 */
-	function handleDownloadToken(RequestInterface $request, ResponseInterface $response) {
+	function handleDownloadToken(RequestInterface $request) {
 		$queryParams = $request->getQueryParameters();
 
 		/**
@@ -240,9 +299,9 @@ class FilesPlugin extends ServerPlugin {
 			$filename = $node->getName();
 			if ($this->request->isUserAgent(
 				[
-					\OC\AppFramework\Http\Request::USER_AGENT_IE,
-					\OC\AppFramework\Http\Request::USER_AGENT_ANDROID_MOBILE_CHROME,
-					\OC\AppFramework\Http\Request::USER_AGENT_FREEBOX,
+					Request::USER_AGENT_IE,
+					Request::USER_AGENT_ANDROID_MOBILE_CHROME,
+					Request::USER_AGENT_FREEBOX,
 				])) {
 				$response->addHeader('Content-Disposition', 'attachment; filename="' . rawurlencode($filename) . '"');
 			} else {
@@ -251,7 +310,7 @@ class FilesPlugin extends ServerPlugin {
 			}
 		}
 
-		if ($node instanceof \OCA\DAV\Connector\Sabre\File) {
+		if ($node instanceof File) {
 			//Add OC-Checksum header
 			/** @var $node File */
 			$checksum = $node->getChecksum();
@@ -265,14 +324,14 @@ class FilesPlugin extends ServerPlugin {
 	 * Adds all ownCloud-specific properties
 	 *
 	 * @param PropFind $propFind
-	 * @param \Sabre\DAV\INode $node
+	 * @param INode $node
 	 * @return void
 	 */
-	public function handleGetProperties(PropFind $propFind, \Sabre\DAV\INode $node) {
+	public function handleGetProperties(PropFind $propFind, INode $node) {
 
 		$httpRequest = $this->server->httpRequest;
 
-		if ($node instanceof \OCA\DAV\Connector\Sabre\Node) {
+		if ($node instanceof Node) {
 
 			$propFind->handle(self::FILEID_PROPERTYNAME, function() use ($node) {
 				return $node->getFileId();
@@ -312,15 +371,15 @@ class FilesPlugin extends ServerPlugin {
 			});
 		}
 
-		if ($node instanceof \OCA\DAV\Connector\Sabre\Node) {
+		if ($node instanceof Node) {
 			$propFind->handle(self::DATA_FINGERPRINT_PROPERTYNAME, function() use ($node) {
 				return $this->config->getSystemValue('data-fingerprint', '');
 			});
 		}
 
-		if ($node instanceof \OCA\DAV\Connector\Sabre\File) {
+		if ($node instanceof File) {
 			$propFind->handle(self::DOWNLOADURL_PROPERTYNAME, function() use ($node) {
-				/** @var $node \OCA\DAV\Connector\Sabre\File */
+				/** @var $node File */
 				try {
 					$directDownloadUrl = $node->getDirectDownload();
 					if (isset($directDownloadUrl['url'])) {
@@ -345,7 +404,7 @@ class FilesPlugin extends ServerPlugin {
 
 		}
 
-		if ($node instanceof \OCA\DAV\Connector\Sabre\Directory) {
+		if ($node instanceof Directory) {
 			$propFind->handle(self::SIZE_PROPERTYNAME, function() use ($node) {
 				return $node->getSize();
 			});
@@ -365,6 +424,7 @@ class FilesPlugin extends ServerPlugin {
 			if (empty($time)) {
 				return false;
 			}
+			/** @var Node $node */
 			$node = $this->tree->getNodeForPath($path);
 			if (is_null($node)) {
 				return 404;
@@ -376,11 +436,12 @@ class FilesPlugin extends ServerPlugin {
 			if (empty($etag)) {
 				return false;
 			}
+			/** @var Node $node */
 			$node = $this->tree->getNodeForPath($path);
 			if (is_null($node)) {
 				return 404;
 			}
-			if ($node->setEtag($etag) !== -1) {
+			if ($node->setETag($etag) !== -1) {
 				return true;
 			}
 			return false;
@@ -389,13 +450,13 @@ class FilesPlugin extends ServerPlugin {
 
 	/**
 	 * @param string $filePath
-	 * @param \Sabre\DAV\INode $node
+	 * @param INode $node
 	 * @throws \Sabre\DAV\Exception\BadRequest
 	 */
-	public function sendFileIdHeader($filePath, \Sabre\DAV\INode $node = null) {
+	public function sendFileIdHeader($filePath) {
 		// chunked upload handling
 		if (isset($_SERVER['HTTP_OC_CHUNKED'])) {
-			list($path, $name) = \Sabre\HTTP\URLUtil::splitPath($filePath);
+			list($path, $name) = URLUtil::splitPath($filePath);
 			$info = \OC_FileChunking::decodeName($name);
 			if (!empty($info)) {
 				$filePath = $path . '/' . $info['name'];
@@ -407,7 +468,7 @@ class FilesPlugin extends ServerPlugin {
 			return;
 		}
 		$node = $this->server->tree->getNodeForPath($filePath);
-		if ($node instanceof \OCA\DAV\Connector\Sabre\Node) {
+		if ($node instanceof Node) {
 			$fileId = $node->getFileId();
 			if (!is_null($fileId)) {
 				$this->server->httpResponse->setHeader('OC-FileId', $fileId);
