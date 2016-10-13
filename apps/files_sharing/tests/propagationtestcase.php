@@ -31,7 +31,6 @@ abstract class PropagationTestCase extends TestCase {
 
 	public static function setUpBeforeClass() {
 		parent::setUpBeforeClass();
-		\OCA\Files_Sharing\Helper::registerHooks();
 	}
 
 	protected function setUp() {
