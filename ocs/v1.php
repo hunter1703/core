@@ -58,6 +58,10 @@ try {
 	// force language as given in the http request
 	\OC::$server->getL10NFactory()->setLanguageFromRequest();
 
+	if(!\OC::$server->getUserSession()->isLoggedIn()) {
+		OC::handleLogin(\OC::$server->getRequest());
+	}
+
 	OC::$server->getRouter()->match('/ocs'.\OC::$server->getRequest()->getRawPathInfo());
 	return;
 } catch (ResourceNotFoundException $e) {
@@ -73,9 +77,6 @@ try {
  * Then we try the old OCS routes
  */
 try {
-	if(!\OC::$server->getUserSession()->isLoggedIn()) {
-		OC::handleLogin(\OC::$server->getRequest());
-	}
 	OC::$server->getRouter()->match('/ocsapp'.\OC::$server->getRequest()->getRawPathInfo());
 } catch (LoginException $e) {
 	OC_API::respond(new Result(null, \OCP\API::RESPOND_UNAUTHORISED, 'Unauthorised'), OC_API::requestedFormat());
